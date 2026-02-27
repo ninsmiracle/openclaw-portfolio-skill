@@ -940,7 +940,7 @@ def generate_report_md(snapshot: dict, md_source: str) -> str:
     lines.append("- **能源**: 小仓位持有")
     lines.append("- **港股/US**: 数据不全时暂不操作")
 
-    # Data gaps
+    # Data quality / gaps section
     lines.append("\n### ⚠️ 数据缺口与后续要求\n")
     missing_items = []
     if us_errors:
@@ -953,6 +953,8 @@ def generate_report_md(snapshot: dict, md_source: str) -> str:
         lines.append("为生成完整可执行计划，**必须补充**:")
         for item in missing_items:
             lines.append(f"- [ ] {item}")
+    else:
+        lines.append("✅ **所有数据源正常** - 无缺口")
     lines.append("- [ ] 重新运行 `pull_snapshot.py` 确认所有数据源正常")
     lines.append("- [ ] 验证 `us_quote_errors` 为空")
 
