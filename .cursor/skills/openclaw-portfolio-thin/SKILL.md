@@ -191,6 +191,10 @@ Rules:
 - Numeric fields must be numbers, not percent strings.
 - `confidence` range: `0.0` to `1.0`.
 
+## External Delivery (Optional)
+
+If a file named `.portfolio_webhook` exists in the project root containing a webhook URL, `pull_snapshot.py` will automatically POST the generated markdown report to that URL after completion. This enables pushing reports to third-party chat bots (e.g., Feishu group bots). The file is gitignored to prevent accidental exposure.
+
 ## Acceptance Checklist
 
 - Normal path:
