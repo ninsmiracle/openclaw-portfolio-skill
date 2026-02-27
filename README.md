@@ -17,7 +17,13 @@
 uv run init_current_position.py
 ```
 
-或复制模板：
+或复制双语模板（推荐）：
+
+```bash
+cp current_position.bilingual.example.md current_position.md
+```
+
+或旧版中文模板：
 
 ```bash
 cp current_position.example.md current_position.md
@@ -130,6 +136,51 @@ openclaw cron add --name "Portfolio Daily Report" \
   --channel feishu \
   --to ou_你的用户ID
 ```
+
+---
+
+## 🧮 定投模拟（DCA）功能
+
+本 Skill **可以自动计算定投对资产的未来影响**。在 `current_position.md` 中配置 `dca_plan` 后：
+
+- **自动叠加现金流**：按当前价格预估未来 N 期定投后的持仓变化
+- **调整后快照**：展示定投完成后各资产桶的占比
+- **再平衡建议**：如果定投导致某个桶超限，会提前提醒
+
+### 示例配置
+
+```yaml
+dca_plan:
+  enabled: true
+  target:
+    market: CN
+    code: "512890"         # 定投标的：红利低波ETF
+    name: "红利低波ETF"
+  frequency: "EVERY_TRADING_DAY"
+  amount_cny_10k: 0.50     # 每天定投 0.5 万元
+  periods: 10              # 模拟未来 10 个交易日
+  cash_source:
+    market: CN
+    code: "CASH"           # 从现金账户扣款
+```
+
+**效果**：
+```
+📈 定投模拟 (DCA Simulation)
+计划：每天定投红利低波ETF 0.50万，共10个交易日
+现金源：现金人民币 → -5.00万
+预期新增：红利低波ETF +0.XX% (价格按当前价)
+调整后桶分布：dividend 42.1% (+3.2%), gold 10.0%, ...
+建议：定投后 dividend 桶略超上限，可等定投结束后再平衡
+```
+
+### 支持的频率
+
+- `EVERY_TRADING_DAY`: 每个交易日（适合 A 股/港股）
+- `WEEKLY`: 每周一次
+- `MONTHLY`: 每月一次
+
+**提示**：定投金额和期数 (`periods`) 乘积会从现金源扣除，请确保现金充足。
 
 ---
 
