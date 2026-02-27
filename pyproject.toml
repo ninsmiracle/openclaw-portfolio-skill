@@ -1,0 +1,10 @@
+[project]
+name = "finance"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "futu-api>=9.6.5608",
+    "pyyaml>=6.0.3",
+]

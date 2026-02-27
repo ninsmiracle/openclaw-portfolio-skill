@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local secrets / private portfolio data
+.env
+current_position.md
+
+# Runtime-generated snapshots / reports
+portfolio_snapshot.json
+us_snapshot.json
+test_snapshot.json
+report/*.md
