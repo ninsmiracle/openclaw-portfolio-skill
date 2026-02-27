@@ -37,9 +37,12 @@ except Exception:
 
 try:
     from futu import OpenQuoteContext, RET_OK
-except Exception as e:
-    print("ERROR: failed to import futu SDK. Try: pip install futu-api (or futu).")
-    raise
+    FUTU_AVAILABLE = True
+except Exception:
+    # Allow running with non-Futu providers (e.g. Eastmoney for CN/HK).
+    OpenQuoteContext = None
+    RET_OK = None
+    FUTU_AVAILABLE = False
 
 # ----------------------------
 # Config / Models
@@ -253,7 +256,31 @@ def http_get_json(url: str, timeout_sec: float = 4.0) -> Dict:
         raw = resp.read().decode("utf-8")
     return json.loads(raw)
 
-def fetch_snapshots(quote_ctx: OpenQuoteContext, futu_codes: List[str]):
+
+def load_prev_last_by_futu_code(snapshot_path: str) -> Dict[str, float]:
+    """
+    Load previous snapshot quote last prices keyed by futu code.
+    This helps Eastmoney auto-scale correction.
+    """
+    if not snapshot_path or not os.path.exists(snapshot_path):
+        return {}
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        quotes = data.get("quotes") or {}
+        out: Dict[str, float] = {}
+        for _, q in quotes.items():
+            if not isinstance(q, dict):
+                continue
+            futu_code = str(q.get("futu_code") or "").strip()
+            last = _safe_float(q.get("last"))
+            if futu_code and last > 0:
+                out[futu_code] = last
+        return out
+    except Exception:
+        return {}
+
+def fetch_snapshots_futu(quote_ctx, futu_codes: List[str]):
     """
     Use get_market_snapshot in batches (to avoid request size limits).
     Returns dict futu_code -> snapshot dict
@@ -282,6 +309,155 @@ def fetch_snapshots(quote_ctx: OpenQuoteContext, futu_codes: List[str]):
                 "update_time": row.get("update_time"),
                 "currency": row.get("currency"),
             }
+    return out
+
+
+def eastmoney_secid(market: str, code: str) -> str:
+    """
+    Eastmoney secid mapping:
+      - SH: 1.xxxxxx
+      - SZ: 0.xxxxxx
+      - HK: 116.xxxxx
+    """
+    market_u = (market or "").upper()
+    code_s = (code or "").strip().upper()
+    if market_u == "HK":
+        return f"116.{code_s.zfill(5)}"
+    if market_u == "CN":
+        if code_s.startswith(("5", "6", "9")):
+            return f"1.{code_s}"
+        return f"0.{code_s}"
+    raise ValueError(f"eastmoney secid unsupported market: {market_u}")
+
+
+def _em_price(v) -> float:
+    """
+    Eastmoney push2 quote fields are commonly integer cents.
+    Use /100 to normalize to displayed price.
+    """
+    raw = _safe_float(v)
+    return round(raw / 100.0, 6) if raw else 0.0
+
+
+def _choose_em_scale(
+    raw_last: float,
+    raw_prev_close: float,
+    market: str,
+    ref_last: float = 0.0,
+) -> float:
+    """
+    Eastmoney fields are usually x100, but may vary by endpoint/asset.
+    Choose scale from a small candidate set with sanity scoring.
+    """
+    candidates = [0.01, 1.0, 0.1, 0.001]
+    market_u = (market or "").upper()
+
+    def score(scale: float) -> float:
+        last = raw_last * scale
+        prev_close = raw_prev_close * scale if raw_prev_close > 0 else 0.0
+        if last <= 0:
+            return 1e9
+
+        s = 0.0
+        # Broad plausibility guardrail.
+        if not (0.01 <= last <= 200000):
+            s += 1e6
+
+        # CN/HK single-day move usually not extreme.
+        if prev_close > 0:
+            daily_move = abs(last / prev_close - 1.0)
+            if daily_move > 0.40:
+                s += (daily_move - 0.40) * 300.0
+            if daily_move > 2.0:
+                s += 3000.0
+
+        # If we have previous snapshot last, penalize huge jumps.
+        if ref_last > 0:
+            drift = abs(last / ref_last - 1.0)
+            if drift > 0.60:
+                s += (drift - 0.60) * 500.0
+            if drift > 3.0:
+                s += 5000.0
+
+        # Prefer 0.01 as default when scores are close.
+        if abs(scale - 0.01) < 1e-12:
+            s -= 0.05
+
+        # ETF/common-stock soft ranges to break ties.
+        if market_u in ("CN", "HK"):
+            if last > 5000:
+                s += 80.0
+            if last < 0.05:
+                s += 80.0
+        return s
+
+    best = min(candidates, key=score)
+    return best
+
+
+def fetch_quote_eastmoney(market: str, code: str, ref_last: float = 0.0) -> Dict:
+    secid = eastmoney_secid(market, code)
+    url = (
+        "https://push2.eastmoney.com/api/qt/stock/get"
+        f"?secid={quote_plus(secid)}"
+        "&fields=f58,f43,f44,f45,f46,f60,f47,f48,f86"
+    )
+    data = http_get_json(url, timeout_sec=4.0)
+    d = data.get("data") or {}
+    if not d:
+        raise RuntimeError(f"eastmoney empty quote for {market}.{code}")
+
+    raw_last = _safe_float(d.get("f43"))
+    raw_prev_close = _safe_float(d.get("f60"))
+    raw_open = _safe_float(d.get("f46"))
+    raw_high = _safe_float(d.get("f44"))
+    raw_low = _safe_float(d.get("f45"))
+    scale = _choose_em_scale(raw_last, raw_prev_close, market, ref_last=ref_last)
+
+    last = round(raw_last * scale, 6)
+    prev_close = round(raw_prev_close * scale, 6) if raw_prev_close > 0 else 0.0
+    open_p = round(raw_open * scale, 6) if raw_open > 0 else 0.0
+    high = round(raw_high * scale, 6) if raw_high > 0 else 0.0
+    low = round(raw_low * scale, 6) if raw_low > 0 else 0.0
+    vol = _safe_float(d.get("f47"))
+    turnover = _safe_float(d.get("f48"))
+    update_ts = int(_safe_float(d.get("f86")))
+    update_time = (
+        datetime.fromtimestamp(update_ts, tz=timezone.utc).isoformat()
+        if update_ts > 0 else iso_now()
+    )
+    currency = "CNY" if market.upper() == "CN" else "HKD"
+
+    if last <= 0:
+        raise RuntimeError(f"eastmoney invalid last for {market}.{code}: {d}")
+
+    return {
+        "name": d.get("f58") or code,
+        "last": last,
+        "prev_close": prev_close,
+        "open": open_p,
+        "high": high,
+        "low": low,
+        "volume": vol,
+        "turnover": turnover,
+        "update_time": update_time,
+        "currency": currency,
+        "source": "eastmoney",
+        "price_scale": scale,
+    }
+
+
+def fetch_snapshots_eastmoney(
+    instruments: Dict[str, Instrument],
+    prev_last_by_futu_code: Optional[Dict[str, float]] = None,
+) -> Dict[str, Dict]:
+    prev_last_by_futu_code = prev_last_by_futu_code or {}
+    out: Dict[str, Dict] = {}
+    for inst in instruments.values():
+        futu_code = to_futu_code(inst.market, inst.code)
+        ref_last = _safe_float(prev_last_by_futu_code.get(futu_code, 0.0))
+        q = fetch_quote_eastmoney(inst.market, inst.code, ref_last=ref_last)
+        out[futu_code] = q
     return out
 
 def fetch_us_quote_finnhub(symbol: str, api_key: str) -> Dict:
@@ -795,6 +971,12 @@ def main():
     ap.add_argument("--cash_cny_10k", type=float, default=16.0, help="Cash in CNY 10k unit (万元)")
     ap.add_argument("--fx_hkdcny", type=float, default=0.0, help="Optional HKDCNY rate; if 0, derived totals exclude HK assets")
     ap.add_argument("--fx_usdcny", type=float, default=0.0, help="Optional USDCNY rate; if 0, derived totals exclude US assets")
+    ap.add_argument(
+        "--cnhk_provider",
+        default="auto",
+        choices=["auto", "futu", "eastmoney"],
+        help="CN/HK quote provider: auto (futu->eastmoney fallback), futu, eastmoney",
+    )
     ap.add_argument("--us_provider", default="auto", choices=["auto", "finnhub", "yahoo"], help="US quote provider")
     ap.add_argument("--finnhub_key", default=os.getenv("FINNHUB_API_KEY", "").strip(), help="Finnhub API key (or .env FINNHUB_API_KEY)")
     args = ap.parse_args()
@@ -805,6 +987,7 @@ def main():
 
     instruments, _, dca_plan = parse_positions_from_md(args.md)
     futu_instruments, us_instruments = split_quote_sources(instruments)
+    prev_last_by_futu_code = load_prev_last_by_futu_code(args.out)
 
     # Build futu code list
     futu_codes = []
@@ -824,14 +1007,35 @@ def main():
     elif args.fx_usdcny > 0:
         fx["USDCNY"] = args.fx_usdcny
 
-    # Connect OpenD and fetch snapshots
+    # Fetch CN/HK quotes (provider abstraction: futu/eastmoney/auto)
     quotes: Dict[str, Dict] = {}
     if futu_codes:
-        quote_ctx = OpenQuoteContext(host=args.host, port=args.port)
-        try:
-            quotes.update(fetch_snapshots(quote_ctx, futu_codes))
-        finally:
-            quote_ctx.close()
+        if args.cnhk_provider == "eastmoney":
+            quotes.update(fetch_snapshots_eastmoney(futu_instruments, prev_last_by_futu_code))
+        elif args.cnhk_provider == "futu":
+            if not FUTU_AVAILABLE:
+                print("ERROR: futu SDK unavailable. Install futu-api or use --cnhk_provider eastmoney")
+                sys.exit(2)
+            quote_ctx = OpenQuoteContext(host=args.host, port=args.port)
+            try:
+                quotes.update(fetch_snapshots_futu(quote_ctx, futu_codes))
+            finally:
+                quote_ctx.close()
+        else:
+            # auto: prefer futu; fallback to eastmoney when futu is unavailable/fails.
+            if FUTU_AVAILABLE:
+                try:
+                    quote_ctx = OpenQuoteContext(host=args.host, port=args.port)
+                    try:
+                        quotes.update(fetch_snapshots_futu(quote_ctx, futu_codes))
+                    finally:
+                        quote_ctx.close()
+                except Exception as e:
+                    print(f"WARNING: futu CN/HK quote failed, fallback to eastmoney: {e}")
+                    quotes.update(fetch_snapshots_eastmoney(futu_instruments, prev_last_by_futu_code))
+            else:
+                print("INFO: futu SDK unavailable, using eastmoney for CN/HK quotes")
+                quotes.update(fetch_snapshots_eastmoney(futu_instruments, prev_last_by_futu_code))
 
     # Fetch US quotes and merge into same quote structure.
     us_symbols = sorted({inst.code.strip().upper() for inst in us_instruments.values() if inst.code.strip()})
