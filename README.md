@@ -139,6 +139,22 @@ openclaw cron add --name "Portfolio Daily Report" \
 
 ---
 
+### 🔌 外部 Webhook 推送（可选）
+
+如需将报告同时推送到第三方群聊机器人（如飞书群机器人），可在项目根目录创建 `.portfolio_webhook` 文件，内容为 Webhook URL。该文件已加入 `.gitignore`，确保不会意外提交。
+
+当文件存在时，`pull_snapshot.py` 会在生成报告后自动 POST 报告全文到该 URL（Feishu 机器人消息格式）。URL 仅存储在本地，**不会暴露到公网**。
+
+示例：
+```bash
+echo "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx" > .portfolio_webhook
+```
+
+> **提示**：Webhook 推送在报告生成后异步执行，不会影响主流程。若推送失败，错误会输出到 stderr（不中断任务）。
+
+
+---
+
 ## 🧮 定投模拟（DCA）功能
 
 本 Skill **可以自动计算定投对资产的未来影响**。在 `current_position.md` 中配置 `dca_plan` 后：
