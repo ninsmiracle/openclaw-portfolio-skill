@@ -28,6 +28,7 @@ from urllib.error import URLError, HTTPError
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
+import urllib.request
 
 # Optional YAML support (recommended)
 try:
@@ -961,6 +962,43 @@ def generate_report_md(snapshot: dict, md_source: str) -> str:
 
     return "\n".join(lines)
 
+def send_webhook_report(report_md: str) -> None:
+    """
+    If .portfolio_webhook file exists in current working directory, POST the report to the webhook URL.
+    The file should contain the webhook URL as plain text (no newline).
+    """
+    webhook_path = os.path.join(os.getcwd(), '.portfolio_webhook')
+    if not os.path.isfile(webhook_path):
+        return
+    try:
+        with open(webhook_path, 'r', encoding='utf-8') as f:
+            webhook_url = f.read().strip()
+        if not webhook_url:
+            return
+        # Prepare payload in Feishu bot format
+        payload = {
+            "msg_type": "text",
+            "content": {
+                "text": report_md
+            }
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        req = urllib.request.Request(
+            webhook_url,
+            data=data,
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if 200 <= resp.status < 300:
+                # Success; log minimally to avoid noise.
+                print("INFO: webhook sent successfully", file=sys.stderr)
+            else:
+                print(f"WARNING: webhook returned status {resp.status}", file=sys.stderr)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"WARNING: webhook send failed: {e}", file=sys.stderr)
+
 def main():
     load_dotenv(".env")
     ap = argparse.ArgumentParser()
@@ -1076,6 +1114,9 @@ def main():
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(report_md)
         print(f"REPORT: saved {report_path}")
+
+        # Send to webhook if configured
+        send_webhook_report(report_md)
     except Exception as e:
         print(f"WARNING: failed to generate report: {e}")
 

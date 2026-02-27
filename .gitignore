@@ -12,6 +12,7 @@ wheels/
 # Local secrets / private portfolio data
 .env
 current_position.md
+.portfolio_webhook
 
 # Runtime-generated snapshots / reports
 portfolio_snapshot.json
