@@ -77,3 +77,119 @@ uv run check_privacy.py
   - `report/*.md`（人类可读报告）
 
 若使用 skill 且缺少 `current_position.md`，应先问答收集数据并创建该文件，再继续后续流程。
+
+---
+
+## 📦 作为 OpenClaw Skill 使用
+
+本项目已打包为 OpenClaw skill，可通过自然语言触发。
+
+### 安装
+
+```bash
+# 使用 clawhub 安装（推荐）
+clawhub install openclaw-portfolio-skill
+
+# 或手动克隆到skills目录
+git clone https://github.com/ninsmiracle/openclaw-portfolio-skill.git ~/.openclaw/skills/openclaw-portfolio-skill
+```
+
+安装后重启网关或等待自动加载。
+
+### 触发方式
+
+对 OpenClaw 说以下任一语句：
+
+- "今天的交易机会有哪些？"
+- "生成资产报告"
+- "持仓分析"
+- "再平衡建议"
+- "跑一下 portfolio 快照"
+
+Skill 会自动：
+1. 读取 `current_position.md` 提取现金
+2. 调用 `pull_snapshot.py` 生成快照
+3. 生成 Markdown 报告并通过原渠道返回
+4. 将报告存档到 `report/YYMMDD-HHMMSS.md`
+
+### 配置要求
+
+- OpenD（Futu）运行在 `127.0.0.1:11111`（CN/HK 行情）
+- 可选：`.env` 中设置 `FINNHUB_API_KEY`（US 行情，避免 Yahoo 失败）
+- 持仓文件：`current_position.md`（需包含 `asset_buckets` 分类定义）
+
+### 定时任务
+
+设置每日 14:30 自动推送：
+
+```bash
+openclaw cron add --name "Portfolio Daily Report" \
+  --expr "30 14 * * 1-5" \
+  --tz "Asia/Shanghai" \
+  --message "使用 portfolio-thin skill 生成今天的交易机会报告" \
+  --channel feishu \
+  --to ou_你的用户ID
+```
+
+---
+
+## 🔧 开发与贡献
+
+### 项目结构
+
+```
+.
+├── pull_snapshot.py          # 主脚本（uv 管理依赖）
+├── portfolio_snapshot.json   # 生成快照（gitignore）
+├── report/                   # 自动生成的报告（gitignore）
+├── current_position.md      # 持仓文件（用户维护，gitignore）
+├── strategy/                 # 策略文档与函数契约
+├── SKILL.md                  # OpenClaw skill 定义（自动加载）
+└── pyproject.toml           # 依赖：futu-api, pyyaml
+```
+
+### 本地运行测试
+
+```bash
+# 安装依赖
+uv sync
+
+# 生成快照
+uv run pull_snapshot.py --md current_position.md --out test.json --cash_cny_10k 16.00 --us_provider auto
+
+# 查看报告
+cat report/$(date +%y%m%d-%H%M%S).md
+```
+
+### 多桶分类说明
+
+`current_position.md` 中的 `asset_buckets` 支持一个标的同时属于多个桶。例如：
+
+```yaml
+asset_buckets:
+  energy_cn:
+    - {market: CN, code: "603393", name: "新天然气"}
+  shipping_cn:
+    - {market: CN, code: "600026", name: "中远海能"}
+```
+
+如果希望 `600026` 同时计入 `energy_cn` 和 `shipping_cn`，只需在两个桶中都列出。脚本会自动**平均拆分市值**。
+
+### 隐私保护
+
+- `current_position.md`、`.env`、`portfolio_snapshot.json`、`report/` 已加入 `.gitignore`
+- 发布前运行 `uv run check_privacy.py` 自检
+- 建议使用 `current_position.example.md` 作为模板，真实数据不提交
+
+---
+
+## 📄 许可证
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+## 🙏 致谢
+
+- 飞书/富途/Yahoo Finance 提供行情源
+- OpenClaw 社区提供技能框架
